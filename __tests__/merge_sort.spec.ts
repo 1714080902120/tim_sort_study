@@ -26,13 +26,14 @@ describe("test_tim_sort", () => {
 
   test("test_random", () => {
     const arr = [];
-    for (let i = 0; i < 257; i++) {
-      arr.push(Math.random() * 100);
+    for (let i = 0; i < 1257; i++) {
+      arr.push(Math.floor(Math.random() * 100));
     }
 
-    const copyArrStr = [...arr].sort((a, b) => a - b).join(",");
+    const copyArr = [...arr].sort((a, b) => (a - b));
+    const copyStr = copyArr.join(',');
     const res = timsort(arr);
-    expect(res.toString()).toBe(copyArrStr);
+    expect(res.toString()).toBe(copyStr);
   });
 
   test("test_merge_sort", () => {

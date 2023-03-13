@@ -6,6 +6,9 @@ import { equalTo, lessThan, lessThanEqual, reverse } from "./util";
 /**
  * @description timsort核心代码
  */
+
+const MIN_GALLOP = 7; // 初始阈值
+
 export function mergeSort(
   array: number[],
   first: number,
@@ -17,6 +20,7 @@ export function mergeSort(
     remain: first,
     last,
     minrun: getMinrun(last - first),
+    minGallop: MIN_GALLOP,
   };
 
   while (nextRun(state)) {
@@ -184,6 +188,9 @@ function mergeHeadRuns(state: MergeState) {
 
 /**
  * @description 归并排序核心，合并两个数组
+ * @param { number } first 按栈顶往下的规则，比如[B, A], A更靠近栈顶。这个first是B的first,因为切割顺序是从左到右，B的切割早于A。
+ * @param { number } connect 按栈顶往下的规则，比如[B, A]，这个是A的first，因为切割`run`的过程是从左到右的，所以A实际上是在B之后截取的。
+ * @param { number } last 同上描述，这个是A的last
  */
 function mergeNeighbor(
   array: number[],
@@ -202,9 +209,15 @@ function mergeNeighbor(
   return func(array, first, connect, last, state);
 }
 
+// ---------------------------------------merge into left start-------------------------------------
+
 /**
- * @description 将右边的run合并到左边
- * [1, 5]和[2, 3, 6] => [1,2, >2,3,6] => [1,2, 3,>3,6] => [1,2, 3,5,>6]
+ * @description 左边比较短，这个时候右边合并到左边，这个过程中存在一些不需要参与的元素
+ * 找到左边小于等于右边第一个元素的元素的位置
+ * 比如：[1, 5]和[2, 3, 6]
+ * 此时左边小于等于右边第一个元素的位置是`0`，那么元素`1`可以不参与排序
+ * 那么需要排序的元素变成[5]和[2, 3, 6]
+ *
  */
 function mergeIntoLeft(
   array: number[],
@@ -221,24 +234,31 @@ function mergeIntoLeft(
     l_cur: 0,
     l_last: -1,
     left: [],
+    galloping: false,
+    gallopingOut: false,
+    selectLeft: true,
+    selectCount: 0,
   };
-  m.cur = binarySearch(array, first, connect - 1, m.right[m.r_cur]);
+  // 二分查询找到左边第一个小于等于右边第一个元素的元素的位置
+  m.cur = binarySearch(array, first, connect, m.right[m.r_cur]);
+  // 截取左边需要排序的个数
   m.l_last = connect - m.cur;
+  // 截取左边需要排序的元素
   m.left = array.slice(m.cur, connect);
 
-  while (m.l_cur < m.l_last && m.r_cur < m.r_last) {
-    const l_val = m.left[m.l_cur];
-    const r_val = m.right[m.r_cur];
-
-    if (lessThanEqual(l_val, r_val)) {
-      array[m.cur++] = l_val;
-      m.l_cur++;
+  // 遍历排序两个数组
+  // 左边的从截取位置开始匹配
+  // 右边全匹配
+  while (m.l_cur < m.l_last && m.r_cur < (m.r_last as number)) {
+    if (!m.galloping) {
+      mergeLeftOnePairMode(array, state, m);
     } else {
-      array[m.cur++] = r_val;
-      m.r_cur++;
+      mergeLeftGallopingMode(array, state, m);
     }
   }
 
+  // 如果这个时候左边还有剩下的元素，那么就说明右边被匹配完了。
+  // 剩下的左边元素必定大于任何右边元素，可以直接放到合并的数组后面
   while (m.l_cur < m.l_last) {
     array[m.cur++] = m.left[m.l_cur++];
   }
@@ -247,8 +267,79 @@ function mergeIntoLeft(
 }
 
 /**
- * @description 将左边的run合并到右边
- * [1, 3, 4]和[2, 5] => [1,3,4<, 4,5] => [1,3<,3, 4,5] => [1,<2,3, 4,5]
+ * @description 常规合并到左边，因为存在不需要galloping的场景
+ */
+function mergeLeftOnePairMode(
+  array: number[],
+  state: MergeState,
+  m: MergeItem
+) {
+  // 如果左边当前匹配的元素小于等于右边的，那么就找到位置了，将该值插入到里面
+  // 否则插入右边当前匹配的元素
+  const l_val = m.left[m.l_cur];
+  const r_val = m.right[m.r_cur];
+  if (lessThanEqual(l_val, r_val)) {
+    array[m.cur++] = l_val;
+    m.l_cur++;
+    // 如果发现是左边的小，这个时候连续被打破，需要切换状态
+    modeControlInOnePairMode(state, m, !m.selectLeft);
+  } else {
+    array[m.cur++] = r_val;
+    m.r_cur++;
+    modeControlInOnePairMode(state, m, m.selectLeft as boolean);
+  }
+}
+
+/**
+ * @description 使用快速增加模式合并
+ * 找到左右两边的连续元素组，然后一次性插入，准确的来说应该是移动到对应的位置，因为都是在同一个数组里操作的
+ */
+function mergeLeftGallopingMode(
+  array: number[],
+  state: MergeState,
+  m: MergeItem
+) {
+  if (state.minGallop > 0) state.minGallop--;
+  const l_val = m.left[m.l_cur];
+  const r_val = m.right[m.r_cur];
+  if (lessThanEqual(l_val, r_val)) {
+    // 找到左边连续小于等于右边的部分
+    const end = gallopFirstSearch(
+      m.left,
+      m.l_cur + 1,
+      m.l_last as number,
+      r_val
+    );
+    modeControlInGallopingMode(state, m, end - m.l_cur);
+    // 将这部分连续的元素都插入到对应的位置
+    while (m.l_cur < end) array[m.cur++] = m.left[m.l_cur++];
+  } else {
+    // 找到右边连续小于左边的部分
+    const end = gallopFirstSearch(
+      m.right,
+      m.r_cur + 1,
+      m.r_last as number,
+      l_val
+    );
+    modeControlInGallopingMode(state, m, end - m.r_cur);
+    // 将这部分连续的元素都插入到对应的位置
+    while (m.r_cur < end) array[m.cur++] = m.right[m.r_cur++];
+  }
+}
+
+
+// ---------------------------------------merge into left end-------------------------------------
+
+
+
+// ---------------------------------------merge into right start-------------------------------------
+
+/**
+ * @description 右边比较短，左边合并到右边，这个过程存在一些不需要参与的元素。
+ * 找到右边大于左边最后一个元素的元素的位置
+ * 比如：[1, 3, 4]和[2, 5]
+ * 此时找到右边的位置是`1`，那么元素`5`不需要参与排序
+ * 那么就变成[1, 3, 4]和[2]的排序
  */
 function mergeIntoRight(
   array: number[],
@@ -260,32 +351,184 @@ function mergeIntoRight(
   const m: MergeItem = {
     left: array,
     l_cur: connect,
-    l_last: last,
+    l_first: first,
     cur: -1,
     r_cur: 0,
-    r_last: -1,
+    r_first: 0,
     right: [],
+    galloping: false,
+    gallopingOut: false,
+    selectLeft: true,
+    selectCount: 0,
   };
-  m.cur = binarySearch(array, first, connect - 1, m.right[m.r_cur]);
-  m.r_last = connect - m.cur;
-  m.right = array.slice(m.cur, connect);
+  // 找到右边第一个大于左边最后一个元素的元素的位置
+  m.cur = binarySearch(array, connect, last, m.left[m.l_cur - 1]);
+  // 截取需要排序的部分
+  m.right = array.slice(connect, m.cur);
+  // 截取需要排序的个数
+  m.r_cur = m.cur - connect;
 
-  while (m.l_cur < m.l_last && m.r_cur < m.r_last) {
-    const l_val = m.left[m.l_cur];
-    const r_val = m.right[m.r_cur];
-
-    if (lessThanEqual(l_val, r_val)) {
-      array[m.cur++] = l_val;
-      m.l_cur++;
+  // 遍历两个数组，左边的全参与，右边仅截取的部分参与
+  while ((m.l_first as number) < m.l_cur && (m.r_first as number) < m.r_cur) {
+    if (!m.galloping) {
+      mergeRightOnePairMode(array, state, m);
     } else {
-      array[m.cur++] = r_val;
-      m.r_cur++;
+      mergeRightGallopingMode(array, state, m);
     }
   }
 
-  while (m.l_cur < m.l_last) {
-    array[m.cur++] = m.left[m.l_cur++];
+  // 最后如果右边还有剩余的元素，那么就说明右边的元素一定都小于左边的元素，可以直接放到数组的最前面。
+  while ((m.r_first as number) < m.r_cur) {
+    array[--m.cur] = m.right[--m.r_cur];
   }
 
   return array;
+}
+
+/**
+ * @description 常规合并到右边
+ */
+function mergeRightOnePairMode(
+  array: number[],
+  state: MergeState,
+  m: MergeItem
+) {
+  // 如果右边当前匹配的元素的小于左边当前匹配的位置，那么就找到位置了，插入左边的值
+  // 否则插入右边元素
+  const l_val = m.left[m.l_cur - 1];
+  const r_val = m.right[m.r_cur - 1];
+  if (lessThan(r_val, l_val)) {
+    array[--m.cur] = l_val;
+    --m.l_cur;
+    modeControlInOnePairMode(state, m, !m.selectLeft);
+  } else {
+    array[--m.cur] = r_val;
+    --m.r_cur;
+    modeControlInOnePairMode(state, m, m.selectLeft as boolean);
+  }
+}
+
+/**
+ * @description 快速增长模式下合并
+ * 获取两边连续的部分，然后批量将它们合并
+ */
+function mergeRightGallopingMode(
+  array: number[],
+  state: MergeState,
+  m: MergeItem
+) {
+
+  if (state.minGallop > 0) state.minGallop--;
+  const l_val = m.left[m.l_cur - 1];
+  const r_val = m.right[m.r_cur - 1];
+
+  if (lessThan(r_val, l_val)) {
+    // 获取右边连续小于左边的元素，也就是左边连续大于等于右边的部分
+    const begin = gallopLastSearch(
+      m.left,
+      m.l_first as number,
+      m.l_cur - 1,
+      r_val
+    );
+    modeControlInGallopingMode(state, m, m.l_cur - begin);
+    // 批量移动
+    while (begin < m.l_cur) array[--m.cur] = m.left[--m.l_cur];
+  } else {
+    // 获取右边连续大于等于左边的元素
+    const begin = gallopLastSearch(
+      m.right,
+      m.r_first as number,
+      m.r_cur - 1,
+      l_val
+    );
+    modeControlInGallopingMode(state, m, m.r_cur - begin);
+    // 批量移动
+    while (begin < m.r_cur) array[--m.cur] = m.right[--m.r_cur];
+  }
+}
+
+// ---------------------------------------merge into right end-------------------------------------
+
+/**
+ * @description 切换收集的状态，如果连续达到galloping个，那么就切换`galloping`状态。
+ */
+function modeControlInOnePairMode(
+  state: MergeState,
+  m: MergeItem,
+  selectSwitched: boolean
+) {
+  if (selectSwitched) {
+    m.selectLeft = !m.selectLeft;
+    m.selectCount = 0;
+  }
+  m.selectCount++;
+  if (m.selectCount >= state.minGallop) {
+    m.galloping = true;
+    m.selectCount = 0;
+  }
+}
+
+/**
+ * @description 当galloping可操作数量小于最小阈值，此时停止galloping，回归常规合并
+ */
+function modeControlInGallopingMode(
+  state: MergeState,
+  m: MergeItem,
+  gallopSize: number
+) {
+  if (gallopSize < MIN_GALLOP) {
+    if (m.gallopingOut) {
+      m.galloping = false;
+      m.gallopingOut = false;
+      state.minGallop++;
+    } else {
+      m.gallopingOut = true;
+    }
+  } else {
+    m.gallopingOut = false;
+  }
+}
+
+/**
+ * @description 找到一组连续小于/大于(等于)的元素，方向是正常的左到右
+ */
+function gallopFirstSearch(
+  array: number[],
+  first: number,
+  last: number,
+  value: number
+): number {
+  let pre = 0;
+  let offset = 1;
+  while (first + offset < last) {
+    if (lessThan(value, array[first + offset])) break;
+    pre = offset;
+    offset = (offset << 1) + 1;
+  }
+  const searchFirst = first + pre;
+  const searchLast = first + offset < last ? first + offset : last;
+  // 找到第一个元素在整个数组中的位置
+  return binarySearch(array, searchFirst, searchLast, value);
+}
+
+
+/**
+ * @description 也是找到一组连续的元素，但是方向是从右到左，也就是从后往前
+ */
+function gallopLastSearch(
+  array: number[],
+  first: number,
+  last: number,
+  value: number
+) {
+  let pre = 0;
+  let offset = 1;
+  while (first < last - offset) {
+      if (!lessThan(value, array[last - offset])) break;
+      pre = offset;
+      offset = (offset << 1) + 1;
+  }
+  const searchFirst = (first < last - offset) ? last - offset : first;
+  const searchLast = last - pre;
+  return binarySearch(array, searchFirst, searchLast, value);
 }
