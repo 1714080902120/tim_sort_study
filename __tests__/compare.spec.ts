@@ -95,7 +95,7 @@ describe("test_compare", () => {
 
         arr = sortAndConcatArr(arr, begin, randomSortNum);
         arr2 = sortAndConcatArr(arr2, begin, randomSortNum);
-        arr2 = sortAndConcatArr(arr3, begin, randomSortNum);
+        arr3 = sortAndConcatArr(arr3, begin, randomSortNum);
       }
 
       const q_date_begin = new Date().getTime();
